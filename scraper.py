@@ -219,7 +219,7 @@ def run_visible_scraper():
 
             # --- PROCESS: Print Card ---
             try:
-                print_btn = row.locator("a:has-text('Print Card')")
+                print_btn = row.locator("a[onclick*='print_card']")
                 if print_btn.count() > 0:
                     onclick_val = print_btn.get_attribute("onclick") or ""
                     match = re.search(r"print_card\('([^']+)'\)", onclick_val)
@@ -242,7 +242,7 @@ def run_visible_scraper():
 
             # --- PROCESS: Print Members ---
             try:
-                print_members_btn = row.locator("a:has-text('Print Members')")
+                print_members_btn = row.locator("a[onclick*='print_members']")
                 if print_members_btn.count() > 0:
                     onclick_val = print_members_btn.get_attribute("onclick") or ""
                     match = re.search(r"print_members\('([^']+)'\)", onclick_val)
@@ -251,11 +251,25 @@ def run_visible_scraper():
                         print_url = f"https://churchsoft.in/family_card/print_member_page/{cardid}/half"
                         print(f" -> Generated Print Members URL: {print_url}")
                         
-                        print(" -> Headless worker generating Members PDF...")
-                        headless_page.goto(print_url, wait_until="networkidle")
+                        print(" -> Headless worker downloading Members file...")
                         pdf_path = os.path.join(target_folder, f"{safe_code}_members.pdf")
-                        headless_page.pdf(path=pdf_path, format="A4", print_background=True)
-                        print(f" -> Saved: {safe_code}_members.pdf")
+                        try:
+                            with headless_page.expect_download(timeout=15000) as download_info:
+                                try:
+                                    headless_page.goto(print_url)
+                                except Exception as goto_err:
+                                    if "Download is starting" not in str(goto_err):
+                                        raise goto_err
+                            
+                            download = download_info.value
+                            download.save_as(pdf_path)
+                            print(f" -> Saved: {safe_code}_members.pdf (via download)")
+                        except Exception as dl_err:
+                            # Fallback to standard PDF generation if download was not triggered
+                            print(f" -> Download failed or wasn't triggered ({dl_err}). Trying standard PDF generation...")
+                            headless_page.goto(print_url, wait_until="networkidle")
+                            headless_page.pdf(path=pdf_path, format="A4", print_background=True)
+                            print(f" -> Saved: {safe_code}_members.pdf (via standard PDF)")
                     else:
                         print(" -> Failed to extract token for Print Members")
                 else:
