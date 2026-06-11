@@ -264,8 +264,8 @@ def run_visible_scraper():
                     serial = row.locator("td:nth-child(1)").inner_text().strip()
                     # Column 2: Code
                     code = row.locator("td:nth-child(2)").inner_text().strip()
-                    # Column 3: Family Unit
-                    family_unit = row.locator("td:nth-child(3)").inner_text().strip()
+                    # Column 3: Family Name
+                    family_name = row.locator("td:nth-child(3)").inner_text().strip()
                     # Column 4: Head of Family
                     head_name = row.locator("td:nth-child(4)").inner_text().strip()
                 except Exception:
@@ -302,7 +302,7 @@ def run_visible_scraper():
                 rows_to_process.append({
                     "serial": serial,
                     "code": code,
-                    "family_unit": family_unit,
+                    "family_name": family_name,
                     "head_name": head_name,
                     "cardid": cardid,
                     "member_cardid": member_cardid
@@ -313,15 +313,16 @@ def run_visible_scraper():
             for item in rows_to_process:
                 serial = item["serial"]
                 code = item["code"]
-                family_unit = item["family_unit"]
+                family_name = item["family_name"]
                 head_name = item["head_name"]
                 cardid = item["cardid"]
                 member_cardid = item["member_cardid"]
 
-                # Generate a safe folder name directly using the code column value
-                safe_folder_name = "".join(c for c in code if c.isalnum() or c in (' ', '_', '-')).strip()
-                if not safe_folder_name:
-                    safe_folder_name = f"row_{serial}_{code}"
+                # Generate a safe folder name formatted as: "{si no}. {family name in column} {head name} {code}"
+                raw_folder_name = f"{serial}. {family_name} {head_name} {code}"
+                safe_folder_name = "".join(c for c in raw_folder_name if c.isalnum() or c in (' ', '.', '_', '-')).strip()
+                while "  " in safe_folder_name:
+                    safe_folder_name = safe_folder_name.replace("  ", " ")
 
                 print(f"\n[Processing Row {serial} | Code: {code} | Name: {head_name}]")
                 
