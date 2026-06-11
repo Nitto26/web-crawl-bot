@@ -1,0 +1,16 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Output downloads
+Churchsoft_Downloads/
+
+# Playwright/Browsers (if local)
+.playwright/

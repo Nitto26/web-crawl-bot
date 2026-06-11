@@ -165,10 +165,7 @@ def run_visible_scraper():
         visible_page.goto("https://churchsoft.in/family_card/family_search")
         
         # Pause script execution here to let you log in and select the correct family unit
-        input("\n👉 STEP: Log in, search your Family List table, and then press ENTER here in VS Code terminal...")
-
-        # After manual login, automatically select the first Family Unit option and click Search
-        select_family_unit_and_search(visible_page)
+        input("\n👉 STEP: Log in, select the Family Unit/search your Family List table, and then press ENTER here in VS Code terminal...")
 
         # 2. Open background worker to handle PDF conversion cleanly without print menus blocking us
         headless_browser = p.chromium.launch(headless=True)
@@ -178,81 +175,120 @@ def run_visible_scraper():
         # Ensure headless context also auto-accepts dialogs if any appear
         headless_context.on("page", lambda pg: pg.on("dialog", handle_dialog))
 
-        # Target the rows inside the data table
-        visible_page.wait_for_selector("table tbody tr")
-        rows = visible_page.locator("table tbody tr").all()
-        print(f"\nFound {len(rows)} data entries to download.")
-
-        for row in rows:
-            # Extract Code text from column 2
-            try:
-                code = row.locator("td:nth-child(2)").inner_text().strip()
-            except Exception:
-                continue
-
-            if not code or "Code" in code or ":" in code or "Family Unit" in code:
-                continue
-
-            # Sanitize code for directory name
-            safe_code = "".join(c for c in code if c.isalnum() or c in (' ', '_', '-')).strip()
-            if not safe_code:
-                continue
-
-            print(f"\n[Processing Code: {safe_code}]")
+        # Sync active session cookies and local/session storage to background worker once at the start
+        try:
+            print("\n[debug] Syncing active session cookies and storage to background worker...")
+            headless_context.add_cookies(visible_context.cookies())
+            local_storage = visible_page.evaluate("() => JSON.stringify(localStorage)")
+            session_storage = visible_page.evaluate("() => JSON.stringify(sessionStorage)")
             
-            # Setup specific folder hierarchy
-            target_folder = os.path.join(BASE_DIR, safe_code)
-            os.makedirs(target_folder, exist_ok=True)
+            # Navigate headless to the domain first so we can set storage
+            headless_page.goto("https://churchsoft.in/family_card/family_search", wait_until="commit")
+            headless_page.evaluate(f"val => {{ Object.assign(window.localStorage, JSON.parse(val)); }}", local_storage)
+            headless_page.evaluate(f"val => {{ Object.assign(window.sessionStorage, JSON.parse(val)); }}", session_storage)
+            print("[debug] Session sync complete.")
+        except Exception as storage_err:
+            print(f" -> Warning (session sync failed): {storage_err}")
 
-            # Sync active session cookies and local/session storage to background worker
-            try:
-                headless_context.add_cookies(visible_context.cookies())
-                local_storage = visible_page.evaluate("() => JSON.stringify(localStorage)")
-                session_storage = visible_page.evaluate("() => JSON.stringify(sessionStorage)")
+        page_num = 1
+        while True:
+            # Target the rows inside the data table
+            visible_page.wait_for_selector("table tbody tr")
+            rows = visible_page.locator("table tbody tr").all()
+            print(f"\n[Page {page_num}] Found {len(rows)} rows on the page. Extracting data...")
+
+            rows_to_process = []
+            for row in rows:
+                try:
+                    # Column 1: Serial
+                    serial = row.locator("td:nth-child(1)").inner_text().strip()
+                    # Column 2: Code
+                    code = row.locator("td:nth-child(2)").inner_text().strip()
+                    # Column 3: Family Unit
+                    family_unit = row.locator("td:nth-child(3)").inner_text().strip()
+                    # Column 4: Head of Family
+                    head_name = row.locator("td:nth-child(4)").inner_text().strip()
+                except Exception:
+                    continue
+
+                if not code or "Code" in code or ":" in code or "Family Unit" in code:
+                    # Skip helper/header rows
+                    continue
+
+                # Get cardid from print_card
+                cardid = None
+                try:
+                    print_btn = row.locator("a[onclick*='print_card']")
+                    if print_btn.count() > 0:
+                        onclick_val = print_btn.get_attribute("onclick") or ""
+                        match = re.search(r"print_card\('([^']+)'\)", onclick_val)
+                        if match:
+                            cardid = match.group(1)
+                except Exception:
+                    pass
+
+                # Get member cardid if exists
+                member_cardid = None
+                try:
+                    print_members_btn = row.locator("a[onclick*='print_members']")
+                    if print_members_btn.count() > 0:
+                        onclick_val = print_members_btn.get_attribute("onclick") or ""
+                        match = re.search(r"print_members\('([^']+)'\)", onclick_val)
+                        if match:
+                            member_cardid = match.group(1)
+                except Exception:
+                    pass
+
+                rows_to_process.append({
+                    "serial": serial,
+                    "code": code,
+                    "family_unit": family_unit,
+                    "head_name": head_name,
+                    "cardid": cardid,
+                    "member_cardid": member_cardid
+                })
+
+            print(f"Extraction complete. Found {len(rows_to_process)} valid families to download on Page {page_num}.")
+
+            for item in rows_to_process:
+                serial = item["serial"]
+                code = item["code"]
+                family_unit = item["family_unit"]
+                head_name = item["head_name"]
+                cardid = item["cardid"]
+                member_cardid = item["member_cardid"]
+
+                # Generate a safe folder name directly using the code column value
+                safe_folder_name = "".join(c for c in code if c.isalnum() or c in (' ', '_', '-')).strip()
+                if not safe_folder_name:
+                    safe_folder_name = f"row_{serial}_{code}"
+
+                print(f"\n[Processing Row {serial} | Code: {code} | Name: {head_name}]")
                 
-                # Navigate headless to the domain first so we can set storage
-                headless_page.goto("https://churchsoft.in/family_card/family_search", wait_until="commit")
-                headless_page.evaluate(f"val => {{ Object.assign(window.localStorage, JSON.parse(val)); }}", local_storage)
-                headless_page.evaluate(f"val => {{ Object.assign(window.sessionStorage, JSON.parse(val)); }}", session_storage)
-            except Exception as storage_err:
-                print(f" -> Warning (session sync): {storage_err}")
+                # Setup specific folder hierarchy
+                target_folder = os.path.join(BASE_DIR, safe_folder_name)
+                os.makedirs(target_folder, exist_ok=True)
 
-            # --- PROCESS: Print Card ---
-            try:
-                print_btn = row.locator("a[onclick*='print_card']")
-                if print_btn.count() > 0:
-                    onclick_val = print_btn.get_attribute("onclick") or ""
-                    match = re.search(r"print_card\('([^']+)'\)", onclick_val)
-                    if match:
-                        cardid = match.group(1)
+                # --- PROCESS: Print Card ---
+                if cardid:
+                    try:
                         print_url = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half"
-                        print(f" -> Generated Print Card URL: {print_url}")
-                        
-                        print(" -> Headless worker generating Card PDF...")
+                        print(f" -> Generating Card PDF for {head_name}...")
                         headless_page.goto(print_url, wait_until="networkidle")
-                        pdf_path = os.path.join(target_folder, f"{safe_code}_card.pdf")
+                        pdf_path = os.path.join(target_folder, f"{code}_card.pdf")
                         headless_page.pdf(path=pdf_path, format="A4", print_background=True)
-                        print(f" -> Saved: {safe_code}_card.pdf")
-                    else:
-                        print(" -> Failed to extract token for Print Card")
+                        print(f" -> Saved: {code}_card.pdf")
+                    except Exception as e:
+                        print(f" -> Failed to process Card: {e}")
                 else:
-                    print(" -> 'Print Card' link not found in this row")
-            except Exception as e:
-                print(f" -> Failed to process Card for {safe_code}: {e}")
+                    print(" -> 'Print Card' link not found for this family")
 
-            # --- PROCESS: Print Members ---
-            try:
-                print_members_btn = row.locator("a[onclick*='print_members']")
-                if print_members_btn.count() > 0:
-                    onclick_val = print_members_btn.get_attribute("onclick") or ""
-                    match = re.search(r"print_members\('([^']+)'\)", onclick_val)
-                    if match:
-                        cardid = match.group(1)
-                        print_url = f"https://churchsoft.in/family_card/print_member_page/{cardid}/half"
-                        print(f" -> Generated Print Members URL: {print_url}")
-                        
-                        print(" -> Headless worker downloading Members file...")
-                        pdf_path = os.path.join(target_folder, f"{safe_code}_members.pdf")
+                # --- PROCESS: Print Members ---
+                if member_cardid:
+                    try:
+                        print_url = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half"
+                        print(f" -> Downloading Members PDF for {head_name}...")
+                        pdf_path = os.path.join(target_folder, f"{code}_members.pdf")
                         try:
                             with headless_page.expect_download(timeout=15000) as download_info:
                                 try:
@@ -263,22 +299,85 @@ def run_visible_scraper():
                             
                             download = download_info.value
                             download.save_as(pdf_path)
-                            print(f" -> Saved: {safe_code}_members.pdf (via download)")
+                            print(f" -> Saved: {code}_members.pdf (via download)")
                         except Exception as dl_err:
                             # Fallback to standard PDF generation if download was not triggered
                             print(f" -> Download failed or wasn't triggered ({dl_err}). Trying standard PDF generation...")
                             headless_page.goto(print_url, wait_until="networkidle")
                             headless_page.pdf(path=pdf_path, format="A4", print_background=True)
-                            print(f" -> Saved: {safe_code}_members.pdf (via standard PDF)")
-                    else:
-                        print(" -> Failed to extract token for Print Members")
+                            print(f" -> Saved: {code}_members.pdf (via standard PDF)")
+                    except Exception as e:
+                        print(f" -> Failed to process Members: {e}")
                 else:
-                    print(" -> 'Print Members' link not found in this row")
-            except Exception as e:
-                print(f" -> Failed to process Members for {safe_code}: {e}")
+                    print(" -> 'Print Members' link not found for this family")
 
-            # Safety delay to prevent dashboard rate-limiting
-            time.sleep(1)
+                # Safety delay to prevent dashboard rate-limiting
+                time.sleep(1)
+
+            # Check pagination for Next button
+            next_button_li = visible_page.locator("li#example_next")
+            if next_button_li.count() == 0:
+                print(" -> No 'Next' page button found. Stopping pagination.")
+                break
+
+            classes = next_button_li.get_attribute("class") or ""
+            if "disabled" in classes:
+                print(" -> 'Next' page button is disabled. Reached the end of the tables.")
+                break
+
+            next_link = next_button_li.locator("a")
+            if next_link.count() > 0:
+                # Capture the first valid code on the current page before clicking
+                old_first_code = rows_to_process[0]["code"] if rows_to_process else ""
+
+                print(f" -> Clicking 'Next' page button to go to Page {page_num + 1}")
+                try:
+                    # Using JavaScript click to bypass any scrolling or overlay obstructions
+                    next_link.first.evaluate("el => el.click()")
+                except Exception as click_err:
+                    print(f" -> JS click failed: {click_err}. Trying human_click fallback...")
+                    human_click(visible_page, next_link.first)
+                
+                page_num += 1
+
+                # Wait for the table contents/pagination to update
+                print(" -> Waiting for page contents to load...")
+                start_time = time.time()
+                updated = False
+                while time.time() - start_time < 12.0:
+                    try:
+                        # 1. Check active pagination text
+                        active_text = visible_page.locator("ul.pagination li.active").inner_text().strip()
+                        
+                        # 2. Find the first row in the table that has a valid code
+                        current_first_code = ""
+                        tr_elements = visible_page.locator("table tbody tr").all()
+                        for tr in tr_elements:
+                            try:
+                                c_val = tr.locator("td:nth-child(2)").inner_text().strip()
+                                if c_val and "Code" not in c_val and ":" not in c_val and "Family Unit" not in c_val:
+                                    current_first_code = c_val
+                                    break
+                            except Exception:
+                                pass
+                        
+                        # We are updated if the active page text matches page_num
+                        # AND the first valid code has changed from the old page
+                        if active_text == str(page_num) and (not old_first_code or current_first_code != old_first_code):
+                            updated = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+
+                if updated:
+                    print(f" -> Table successfully loaded Page {page_num}.")
+                else:
+                    print(" -> Table update timed out, continuing with fallback delay.")
+                    time.sleep(2.5)
+            else:
+                print(" -> 'Next' link anchor not found inside list item. Stopping pagination.")
+                break
 
         # Cleanup
         headless_browser.close()
