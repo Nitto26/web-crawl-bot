@@ -26,6 +26,52 @@ def human_click(page: Page, locator: Locator, timeout: int = 10_000) -> None:
         locator.click()
 
 
+def get_selected_family_unit_text(page: Page) -> str:
+    """
+    Find the selected option text in the Family Unit dropdown.
+    """
+    try:
+        # Try native select first
+        text = page.evaluate("""() => {
+            let select = null;
+            const labels = Array.from(document.querySelectorAll('label'));
+            const familyLabel = labels.find(l => l.innerText.includes('Family Unit'));
+            if (familyLabel) {
+                if (familyLabel.htmlFor) {
+                    select = document.getElementById(familyLabel.htmlFor);
+                }
+                if (!select) {
+                    select = familyLabel.parentElement.querySelector('select');
+                }
+            }
+            if (!select) {
+                select = document.querySelector('select');
+            }
+            if (select && select.selectedIndex >= 0) {
+                return select.options[select.selectedIndex].text.trim();
+            }
+            return '';
+        }""")
+        if text:
+            return text
+    except Exception:
+        pass
+
+    # Fallback to common custom dropdown text selectors (bootstrap-select, select2)
+    try:
+        for selector in ['.filter-option', '.select2-selection__rendered', '.select2-chosen', 'button.dropdown-toggle']:
+            elem = page.locator(selector)
+            if elem.count() > 0:
+                text = elem.first.inner_text().strip()
+                if text and 'select' not in text.lower():
+                    return text
+    except Exception:
+        pass
+
+    return "Unknown_Family_Unit"
+
+
+
 def select_family_unit_and_search(page: Page, timeout: int = 30_000) -> None:
     """
     Locate the "Family Unit" <select>, choose the first real option, click the
@@ -167,6 +213,20 @@ def run_visible_scraper():
         # Pause script execution here to let you log in and select the correct family unit
         input("\n👉 STEP: Log in, select the Family Unit/search your Family List table, and then press ENTER here in VS Code terminal...")
 
+        # Detect the selected dropdown option and create a subfolder for it
+        selected_unit = get_selected_family_unit_text(visible_page)
+        print(f"\n[debug] Detected selected Family Unit: '{selected_unit}'")
+        
+        # Sanitize for safe directory path
+        safe_unit_name = "".join(c for c in selected_unit if c.isalnum() or c in (' ', '_', '-')).strip()
+        safe_unit_name = safe_unit_name.replace(" ", "_")
+        if not safe_unit_name:
+            safe_unit_name = "Unknown_Family_Unit"
+            
+        unit_dir = os.path.join(BASE_DIR, safe_unit_name)
+        os.makedirs(unit_dir, exist_ok=True)
+        print(f"[debug] Downloads will be saved to: {unit_dir}\n")
+
         # 2. Open background worker to handle PDF conversion cleanly without print menus blocking us
         headless_browser = p.chromium.launch(headless=True)
         headless_context = headless_browser.new_context()
@@ -266,7 +326,7 @@ def run_visible_scraper():
                 print(f"\n[Processing Row {serial} | Code: {code} | Name: {head_name}]")
                 
                 # Setup specific folder hierarchy
-                target_folder = os.path.join(BASE_DIR, safe_folder_name)
+                target_folder = os.path.join(unit_dir, safe_folder_name)
                 os.makedirs(target_folder, exist_ok=True)
 
                 # --- PROCESS: Print Card ---
