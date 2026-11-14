@@ -193,13 +193,21 @@ def run_visible_scraper():
         visible_context.add_init_script("window.print = () => {};")
         visible_page = visible_context.new_page()
 
-        # Handle the "Do you want half print?" confirmation dialogue automatically
+        # Handle dialogs automatically: select Half size and Color (never Black & White)
         def handle_dialog(dialog):
-            print(f"Dialog encountered: '{dialog.message}'. Automatically accepting...")
+            msg = dialog.message.lower()
+            print(f"Dialog encountered: '{dialog.message}'.")
             try:
-                dialog.accept()
+                # If dialog asks to confirm black & white, dismiss/cancel to force Color
+                if any(bw in msg for bw in ["black", "b/w", "b&w", "black and white"]):
+                    print(" -> Declining Black & White option to ensure Color is selected...")
+                    dialog.dismiss()
+                else:
+                    # Accept 'half', 'color', or standard confirmations
+                    print(" -> Automatically accepting dialog...")
+                    dialog.accept()
             except Exception as e:
-                print(f" -> Failed to accept dialog: {e}")
+                print(f" -> Failed to handle dialog: {e}")
 
         # Attach dialog handler to the already-created page
         visible_page.on("dialog", handle_dialog)
@@ -212,6 +220,40 @@ def run_visible_scraper():
         
         # Pause script execution here to let you log in and select the correct family unit
         input("\n👉 STEP: Log in, select the Family Unit/search your Family List table, and then press ENTER here in VS Code terminal...")
+
+        # Inspect and auto-select any on-page Color options/radios/selects if present
+        print("\n[debug] Inspecting page print functions and selecting Color mode...")
+        try:
+            page_print_info = visible_page.evaluate("""() => {
+                const cardFn = typeof window.print_card !== 'undefined' ? window.print_card.toString() : '';
+                const membersFn = typeof window.print_members !== 'undefined' ? window.print_members.toString() : '';
+                let selectedColor = false;
+                
+                // If there are radio buttons or dropdowns for color/black & white, select Color
+                document.querySelectorAll('input[type="radio"], input[type="checkbox"], select option').forEach(el => {
+                    const val = (el.value || '').toLowerCase();
+                    const text = (el.innerText || el.textContent || '').toLowerCase();
+                    const id = (el.id || '').toLowerCase();
+                    if (val.includes('color') || text.includes('color') || id.includes('color')) {
+                        if (el.tagName.toLowerCase() === 'option') {
+                            el.parentElement.value = el.value;
+                            el.parentElement.dispatchEvent(new Event('change', { bubbles: true }));
+                        } else {
+                            el.checked = true;
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        selectedColor = true;
+                    }
+                });
+                
+                return { cardFn, membersFn, selectedColor };
+            }""")
+            if page_print_info.get("selectedColor"):
+                print(" -> On-page Color option successfully detected and selected.")
+            if page_print_info.get("cardFn"):
+                print(f" -> print_card JS detected: {page_print_info['cardFn'][:100]}...")
+        except Exception as insp_err:
+            print(f" -> Could not inspect on-page print elements: {insp_err}")
 
         # Detect the selected dropdown option and create a subfolder for it
         selected_unit = get_selected_family_unit_text(visible_page)
@@ -330,12 +372,18 @@ def run_visible_scraper():
                 target_folder = os.path.join(unit_dir, safe_folder_name)
                 os.makedirs(target_folder, exist_ok=True)
 
-                # --- PROCESS: Print Card ---
+                # --- PROCESS: Print Card (Color, Half) ---
                 if cardid:
                     try:
-                        print_url = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half"
-                        print(f" -> Generating Card PDF for {head_name}...")
-                        headless_page.goto(print_url, wait_until="networkidle")
+                        print_url_color = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half/color"
+                        print_url_fallback = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half"
+                        
+                        print(f" -> Generating Card PDF (Color, Half) for {head_name}...")
+                        resp = headless_page.goto(print_url_color, wait_until="networkidle")
+                        if resp and resp.status == 404:
+                            print(" -> /half/color returned 404, falling back to /half...")
+                            headless_page.goto(print_url_fallback, wait_until="networkidle")
+
                         pdf_path = os.path.join(target_folder, f"{code}_card.pdf")
                         headless_page.pdf(path=pdf_path, format="A4", print_background=True)
                         print(f" -> Saved: {code}_card.pdf")
@@ -344,16 +392,19 @@ def run_visible_scraper():
                 else:
                     print(" -> 'Print Card' link not found for this family")
 
-                # --- PROCESS: Print Members ---
+                # --- PROCESS: Print Members (Color, Half) ---
                 if member_cardid:
                     try:
-                        print_url = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half"
-                        print(f" -> Downloading Members PDF for {head_name}...")
+                        print_url_color = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half/color"
+                        print_url_fallback = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half"
+                        print(f" -> Downloading Members PDF (Color, Half) for {head_name}...")
                         pdf_path = os.path.join(target_folder, f"{code}_members.pdf")
                         try:
                             with headless_page.expect_download(timeout=15000) as download_info:
                                 try:
-                                    headless_page.goto(print_url)
+                                    resp = headless_page.goto(print_url_color)
+                                    if resp and resp.status == 404:
+                                        headless_page.goto(print_url_fallback)
                                 except Exception as goto_err:
                                     if "Download is starting" not in str(goto_err):
                                         raise goto_err
@@ -364,7 +415,9 @@ def run_visible_scraper():
                         except Exception as dl_err:
                             # Fallback to standard PDF generation if download was not triggered
                             print(f" -> Download failed or wasn't triggered ({dl_err}). Trying standard PDF generation...")
-                            headless_page.goto(print_url, wait_until="networkidle")
+                            resp = headless_page.goto(print_url_color, wait_until="networkidle")
+                            if resp and resp.status == 404:
+                                headless_page.goto(print_url_fallback, wait_until="networkidle")
                             headless_page.pdf(path=pdf_path, format="A4", print_background=True)
                             print(f" -> Saved: {code}_members.pdf (via standard PDF)")
                     except Exception as e:
