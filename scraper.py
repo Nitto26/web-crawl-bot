@@ -28,27 +28,23 @@ def human_click(page: Page, locator: Locator, timeout: int = 10_000) -> None:
 
 def get_selected_family_unit_text(page: Page) -> str:
     """
-    Find the selected option text in the Family Unit dropdown.
+    Find the selected option text in the Family Unit dropdown (#search_unit).
     """
     try:
-        # Try native select first
         text = page.evaluate("""() => {
-            let select = null;
-            const labels = Array.from(document.querySelectorAll('label'));
-            const familyLabel = labels.find(l => l.innerText.includes('Family Unit'));
-            if (familyLabel) {
-                if (familyLabel.htmlFor) {
-                    select = document.getElementById(familyLabel.htmlFor);
-                }
-                if (!select) {
-                    select = familyLabel.parentElement.querySelector('select');
-                }
+            let su = document.getElementById('search_unit');
+            if (su && su.selectedIndex >= 0 && su.options[su.selectedIndex]) {
+                let val = su.options[su.selectedIndex].text.trim();
+                if (val && !val.includes('---')) return val;
             }
-            if (!select) {
-                select = document.querySelector('select');
-            }
-            if (select && select.selectedIndex >= 0) {
-                return select.options[select.selectedIndex].text.trim();
+            let selects = Array.from(document.querySelectorAll('select'));
+            for (let s of selects) {
+                if (s.selectedIndex >= 0 && s.options[s.selectedIndex]) {
+                    let val = s.options[s.selectedIndex].text.trim();
+                    if (val && !val.includes('---') && !val.toLowerCase().includes('select')) {
+                        return val;
+                    }
+                }
             }
             return '';
         }""")
@@ -57,19 +53,7 @@ def get_selected_family_unit_text(page: Page) -> str:
     except Exception:
         pass
 
-    # Fallback to common custom dropdown text selectors (bootstrap-select, select2)
-    try:
-        for selector in ['.filter-option', '.select2-selection__rendered', '.select2-chosen', 'button.dropdown-toggle']:
-            elem = page.locator(selector)
-            if elem.count() > 0:
-                text = elem.first.inner_text().strip()
-                if text and 'select' not in text.lower():
-                    return text
-    except Exception:
-        pass
-
     return "Unknown_Family_Unit"
-
 
 
 def select_family_unit_and_search(page: Page, timeout: int = 30_000) -> None:
@@ -221,39 +205,9 @@ def run_visible_scraper():
         # Pause script execution here to let you log in and select the correct family unit
         input("\n👉 STEP: Log in, select the Family Unit/search your Family List table, and then press ENTER here in VS Code terminal...")
 
-        # Inspect and auto-select any on-page Color options/radios/selects if present
-        print("\n[debug] Inspecting page print functions and selecting Color mode...")
-        try:
-            page_print_info = visible_page.evaluate("""() => {
-                const cardFn = typeof window.print_card !== 'undefined' ? window.print_card.toString() : '';
-                const membersFn = typeof window.print_members !== 'undefined' ? window.print_members.toString() : '';
-                let selectedColor = false;
-                
-                // If there are radio buttons or dropdowns for color/black & white, select Color
-                document.querySelectorAll('input[type="radio"], input[type="checkbox"], select option').forEach(el => {
-                    const val = (el.value || '').toLowerCase();
-                    const text = (el.innerText || el.textContent || '').toLowerCase();
-                    const id = (el.id || '').toLowerCase();
-                    if (val.includes('color') || text.includes('color') || id.includes('color')) {
-                        if (el.tagName.toLowerCase() === 'option') {
-                            el.parentElement.value = el.value;
-                            el.parentElement.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else {
-                            el.checked = true;
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                        selectedColor = true;
-                    }
-                });
-                
-                return { cardFn, membersFn, selectedColor };
-            }""")
-            if page_print_info.get("selectedColor"):
-                print(" -> On-page Color option successfully detected and selected.")
-            if page_print_info.get("cardFn"):
-                print(f" -> print_card JS detected: {page_print_info['cardFn'][:100]}...")
-        except Exception as insp_err:
-            print(f" -> Could not inspect on-page print elements: {insp_err}")
+        print("\n[debug] Color print URL confirmed from site JavaScript:")
+        print("  -> Card:    https://churchsoft.in/family_card/print_family_card/{cardid}/half?mode=colour")
+        print("  -> Members: https://churchsoft.in/family_card/print_member_page/{cardid}/half?mode=colour")
 
         # Detect the selected dropdown option and create a subfolder for it
         selected_unit = get_selected_family_unit_text(visible_page)
@@ -372,39 +326,30 @@ def run_visible_scraper():
                 target_folder = os.path.join(unit_dir, safe_folder_name)
                 os.makedirs(target_folder, exist_ok=True)
 
-                # --- PROCESS: Print Card (Color, Half) ---
+                # --- PROCESS: Print Card (Half size, Colour) ---
                 if cardid:
                     try:
-                        print_url_color = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half/color"
-                        print_url_fallback = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half"
-                        
+                        print_url = f"https://churchsoft.in/family_card/print_family_card/{cardid}/half?mode=colour"
                         print(f" -> Generating Card PDF (Color, Half) for {head_name}...")
-                        resp = headless_page.goto(print_url_color, wait_until="networkidle")
-                        if resp and resp.status == 404:
-                            print(" -> /half/color returned 404, falling back to /half...")
-                            headless_page.goto(print_url_fallback, wait_until="networkidle")
-
+                        headless_page.goto(print_url, wait_until="networkidle")
                         pdf_path = os.path.join(target_folder, f"{code}_card.pdf")
                         headless_page.pdf(path=pdf_path, format="A4", print_background=True)
-                        print(f" -> Saved: {code}_card.pdf")
+                        print(f" -> Saved: {code}_card.pdf (Color)")
                     except Exception as e:
                         print(f" -> Failed to process Card: {e}")
                 else:
                     print(" -> 'Print Card' link not found for this family")
 
-                # --- PROCESS: Print Members (Color, Half) ---
+                # --- PROCESS: Print Members (Half size, Colour) ---
                 if member_cardid:
                     try:
-                        print_url_color = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half/color"
-                        print_url_fallback = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half"
+                        print_url = f"https://churchsoft.in/family_card/print_member_page/{member_cardid}/half?mode=colour"
                         print(f" -> Downloading Members PDF (Color, Half) for {head_name}...")
                         pdf_path = os.path.join(target_folder, f"{code}_members.pdf")
                         try:
                             with headless_page.expect_download(timeout=15000) as download_info:
                                 try:
-                                    resp = headless_page.goto(print_url_color)
-                                    if resp and resp.status == 404:
-                                        headless_page.goto(print_url_fallback)
+                                    headless_page.goto(print_url)
                                 except Exception as goto_err:
                                     if "Download is starting" not in str(goto_err):
                                         raise goto_err
@@ -415,9 +360,7 @@ def run_visible_scraper():
                         except Exception as dl_err:
                             # Fallback to standard PDF generation if download was not triggered
                             print(f" -> Download failed or wasn't triggered ({dl_err}). Trying standard PDF generation...")
-                            resp = headless_page.goto(print_url_color, wait_until="networkidle")
-                            if resp and resp.status == 404:
-                                headless_page.goto(print_url_fallback, wait_until="networkidle")
+                            headless_page.goto(print_url, wait_until="networkidle")
                             headless_page.pdf(path=pdf_path, format="A4", print_background=True)
                             print(f" -> Saved: {code}_members.pdf (via standard PDF)")
                     except Exception as e:
